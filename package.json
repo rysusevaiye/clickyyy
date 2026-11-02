@@ -1,0 +1,17 @@
+{
+  "name": "clicky",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Clicky by Heyrishi: mechanical keyboard sounds for every keystroke",
+  "author": "Heyrishi",
+  "license": "MIT",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "sounds": "python3 scripts/generate_sounds.py"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

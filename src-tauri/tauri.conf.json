@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Clicky",
+  "version": "1.0.0",
+  "identifier": "com.heyrishi.clicky",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Clicky",
+        "width": 380,
+        "height": 600,
+        "resizable": false,
+        "maximizable": false,
+        "visible": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "Heyrishi",
+    "copyright": "© 2026 Heyrishi",
+    "category": "Utility",
+    "shortDescription": "Mechanical keyboard sounds for every keystroke",
+    "longDescription": "Clicky by Heyrishi runs in the background and plays realistic mechanical keyboard sounds as you type, with distinct click, thock, clack, snap and top-out sounds.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "-",
+      "minimumSystemVersion": "11.0"
+    }
+  }
+}

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clicky</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <img src="logo.svg" alt="" class="logo">
+      <div class="brand">
+        <h1>Clicky</h1>
+        <p>by Heyrishi</p>
+      </div>
+      <span id="status" class="badge">…</span>
+    </header>
+
+    <section id="permission" class="banner" hidden>
+      <p id="permission-text"></p>
+      <button id="permission-action" class="primary"></button>
+    </section>
+
+    <section class="card">
+      <div class="row">
+        <label for="volume">Volume</label>
+        <span id="volume-value" class="value">70%</span>
+      </div>
+      <input id="volume" type="range" min="0" max="100" step="1" value="70">
+      <div class="row toggle-row">
+        <span>Mute sounds</span>
+        <label class="switch"><input id="muted" type="checkbox"><span></span></label>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row"><span class="label">Test sounds</span></div>
+      <div class="previews">
+        <button data-sound="click">Click</button>
+        <button data-sound="thock">Thock</button>
+        <button data-sound="clack">Clack</button>
+        <button data-sound="snap">Snap</button>
+        <button data-sound="topout">Top-out</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row toggle-row">
+        <span>Keep running in the tray when closed</span>
+        <label class="switch"><input id="close-to-tray" type="checkbox"><span></span></label>
+      </div>
+      <div class="row toggle-row">
+        <span>Start minimized to the tray</span>
+        <label class="switch"><input id="start-minimized" type="checkbox"><span></span></label>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button id="hide">Minimize to tray</button>
+      <button id="sounds-folder">Custom sounds…</button>
+      <button id="quit" class="danger">Quit</button>
+    </div>
+
+    <footer>Made by Heyrishi · <span id="version"></span></footer>
+  </main>
+  <script src="main.js"></script>
+</body>
+</html>
