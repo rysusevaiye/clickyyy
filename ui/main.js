@@ -25,6 +25,9 @@ function render(state) {
   startMinimized.disabled = !state.closeToTray;
   $("hide").disabled = !state.closeToTray;
   $("version").textContent = `v${state.version}`;
+  document.querySelectorAll("[data-profile]").forEach((button) => {
+    button.setAttribute("aria-checked", String(button.dataset.profile === state.profile));
+  });
 
   const status = $("status");
   if (state.permission !== "granted") {
@@ -57,6 +60,13 @@ volume.addEventListener("input", () => {
 muted.addEventListener("change", () => invoke("set_muted", { muted: muted.checked }));
 closeToTray.addEventListener("change", () => invoke("set_close_to_tray", { value: closeToTray.checked }));
 startMinimized.addEventListener("change", () => invoke("set_start_minimized", { value: startMinimized.checked }));
+
+document.querySelectorAll("[data-profile]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    await invoke("set_profile", { profile: button.dataset.profile });
+    invoke("preview", { sound: "click" });
+  });
+});
 
 document.querySelectorAll("[data-sound]").forEach((button) => {
   button.addEventListener("click", () => invoke("preview", { sound: button.dataset.sound }));

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthesizes realistic mechanical keyboard samples for Clicky (stdlib only).
+"""Creamy profile: warm, deep PBT thock for Clicky (stdlib only).
 
 Upgraded physical model:
 - Two-stage attack/decay noise envelopes for realistic plastic-on-plastic transients
@@ -15,7 +15,7 @@ import wave
 
 SR = 48_000
 VARIANTS = 5
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "sounds")
+OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "sounds", "creamy")
 
 
 def biquad(x, kind, freq, q):

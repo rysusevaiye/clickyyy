@@ -9,11 +9,18 @@ pub struct Settings {
     pub muted: bool,
     pub close_to_tray: bool,
     pub start_minimized: bool,
+    pub profile: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.7, muted: false, close_to_tray: true, start_minimized: false }
+        Self {
+            volume: 0.7,
+            muted: false,
+            close_to_tray: true,
+            start_minimized: false,
+            profile: crate::audio::DEFAULT_PROFILE.to_string(),
+        }
     }
 }
 

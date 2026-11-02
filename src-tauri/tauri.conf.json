@@ -13,7 +13,7 @@
         "label": "main",
         "title": "Clicky",
         "width": 380,
-        "height": 600,
+        "height": 700,
         "resizable": false,
         "maximizable": false,
         "visible": false,

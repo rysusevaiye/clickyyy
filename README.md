@@ -26,6 +26,10 @@ Clicky runs in the background (in the tray or menu bar) and plays a mechanical k
 
 - **One sound per press.** Clicky tracks which keys are held, so OS key repeat never retriggers the sound. Letting go plays the softer top-out sound.
 - **Ultra-low latency.** Keystrokes are captured on a dedicated high-priority thread and passed lock-free to a real-time mixer. The mixer plays pre-decoded samples from a ~5 ms output buffer.
+- **Three sound profiles.** Switch any time from the window or the tray menu:
+  - **Crisp** (default): clean, dry, un-exaggerated switches with sharp micro-transients
+  - **Creamy**: warm, deep PBT thock with case resonance
+  - **Classic**: bright, lively clicky switches
 - **Natural variation.** Five variants per sound, chosen at random, with slight per-hit volume changes.
 - **Minimal UI.** Master volume, mute, sound previews, run-in-tray and start-minimized options. Settings are remembered.
 
@@ -63,7 +67,7 @@ click_1.wav  click_2.wav  thock_1.wav  clack_1.wav  snap_1.wav  topout_1.wav ...
 
 Restart Clicky to load them. Any category without custom files keeps the built-in sounds.
 
-The built-in sounds are synthesized from a physical model by [`scripts/generate_sounds.py`](scripts/generate_sounds.py) (Python, standard library only). Run `npm run sounds` to regenerate them.
+Custom files replace that sound in every profile. The built-in profiles are synthesized from physical models by [`scripts/profile_crisp.py`](scripts/profile_crisp.py), [`scripts/profile_creamy.py`](scripts/profile_creamy.py) and [`scripts/profile_classic.py`](scripts/profile_classic.py) (Python, standard library only). Run `npm run sounds` to regenerate them into `assets/sounds/<profile>/`.
 
 ## Building from source
 
@@ -87,7 +91,8 @@ src-tauri/src/
   listener_macos.rs  Quartz event tap (macOS)
   listener_rdev.rs   low-level hook / XRecord via rdev (Windows, Linux)
 ui/                  window UI (HTML/CSS/JS)
-assets/              logo and sound samples
+assets/              logo and sound samples (one folder per profile)
+scripts/             sound profile generators
 ```
 
 ## License

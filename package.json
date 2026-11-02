@@ -9,7 +9,7 @@
     "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
-    "sounds": "python3 scripts/generate_sounds.py"
+    "sounds": "python3 scripts/profile_crisp.py && python3 scripts/profile_creamy.py && python3 scripts/profile_classic.py"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

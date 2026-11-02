@@ -17,25 +17,34 @@ use crate::keys::Sound;
 const VOICES: usize = 24;
 const IO_BUFFER_FRAMES: u32 = 256;
 
-macro_rules! builtin_sounds {
-    ($($name:literal),* $(,)?) => {
-        &[$(($name, include_bytes!(concat!("../../assets/sounds/", $name, ".wav")) as &[u8])),*]
+/// Built-in sound profiles: the folder name under `assets/sounds/`.
+pub const PROFILES: [&str; 3] = ["crisp", "creamy", "classic"];
+pub const DEFAULT_PROFILE: &str = "crisp";
+
+/// Embeds one profile's samples, five variants per sound in `Sound::ALL` order.
+macro_rules! profile_sounds {
+    ($profile:literal) => {
+        profile_sounds!(@files $profile:
+            "click_1", "click_2", "click_3", "click_4", "click_5",
+            "thock_1", "thock_2", "thock_3", "thock_4", "thock_5",
+            "clack_1", "clack_2", "clack_3", "clack_4", "clack_5",
+            "snap_1", "snap_2", "snap_3", "snap_4", "snap_5",
+            "topout_1", "topout_2", "topout_3", "topout_4", "topout_5")
+    };
+    (@files $profile:literal: $($name:literal),*) => {
+        &[$(include_bytes!(concat!("../../assets/sounds/", $profile, "/", $name, ".wav")) as &[u8]),*]
     };
 }
 
-const BUILTIN: &[(&str, &[u8])] = builtin_sounds!(
-    "click_1", "click_2", "click_3", "click_4", "click_5",
-    "thock_1", "thock_2", "thock_3", "thock_4", "thock_5",
-    "clack_1", "clack_2", "clack_3", "clack_4", "clack_5",
-    "snap_1", "snap_2", "snap_3", "snap_4", "snap_5",
-    "topout_1", "topout_2", "topout_3", "topout_4", "topout_5",
-);
+const BUILTIN: [&[&[u8]]; 3] = [profile_sounds!("crisp"), profile_sounds!("creamy"), profile_sounds!("classic")];
+const VARIANTS_PER_SOUND: usize = 5;
 
 /// Per category, the variants as mono samples at the device rate.
 type Banks = Vec<Vec<Vec<f32>>>;
 
 #[derive(Clone, Copy)]
 struct Trigger {
+    profile: usize,
     sound: usize,
     variant: usize,
     gain: f32,
@@ -50,7 +59,8 @@ struct Shared {
 pub struct AudioHandle {
     tx: Sender<Trigger>,
     shared: Arc<Shared>,
-    variants: [usize; 5],
+    profile: AtomicUsize,
+    variants: [[usize; 5]; 3],
     last_variant: [AtomicUsize; 5],
 }
 
@@ -62,7 +72,7 @@ impl AudioHandle {
         let shared = Arc::new(Shared { gain: AtomicU32::new(0.5f32.to_bits()), muted: AtomicBool::new(false) });
 
         // The cpal stream isn't Send on every platform, so it lives on its own thread.
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<[usize; 5]>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<[[usize; 5]; 3]>();
         let thread_shared = shared.clone();
         let custom_dir = custom_dir.to_path_buf();
         std::thread::Builder::new()
@@ -77,13 +87,24 @@ impl AudioHandle {
                 }
                 Err(err) => {
                     eprintln!("clicky: audio unavailable: {err}");
-                    let _ = ready_tx.send([0; 5]);
+                    let _ = ready_tx.send([[0; 5]; 3]);
                 }
             })
             .expect("spawn audio thread");
 
-        let variants = ready_rx.recv().unwrap_or([0; 5]);
-        AudioHandle { tx, shared, variants, last_variant: Default::default() }
+        let variants = ready_rx.recv().unwrap_or([[0; 5]; 3]);
+        AudioHandle { tx, shared, profile: AtomicUsize::new(0), variants, last_variant: Default::default() }
+    }
+
+    /// Switches the built-in sound profile; returns false for an unknown name.
+    pub fn set_profile(&self, name: &str) -> bool {
+        match PROFILES.iter().position(|p| *p == name) {
+            Some(index) => {
+                self.profile.store(index, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Perceptual 0...1 volume.
@@ -100,7 +121,8 @@ impl AudioHandle {
         if self.shared.muted.load(Ordering::Relaxed) {
             return;
         }
-        let count = self.variants[sound.index()];
+        let profile = self.profile.load(Ordering::Relaxed);
+        let count = self.variants[profile][sound.index()];
         if count == 0 {
             return;
         }
@@ -112,21 +134,26 @@ impl AudioHandle {
         }
         last.store(variant, Ordering::Relaxed);
         let gain = 0.85 + fastrand::f32() * 0.15;
-        let _ = self.tx.try_send(Trigger { sound: sound.index(), variant, gain });
+        let _ = self.tx.try_send(Trigger { profile, sound: sound.index(), variant, gain });
     }
 }
 
-fn open_stream(custom_dir: &Path, rx: Receiver<Trigger>, shared: Arc<Shared>) -> Result<(cpal::Stream, [usize; 5]), String> {
+type StreamAndVariants = (cpal::Stream, [[usize; 5]; 3]);
+
+fn open_stream(custom_dir: &Path, rx: Receiver<Trigger>, shared: Arc<Shared>) -> Result<StreamAndVariants, String> {
     let device = cpal::default_host().default_output_device().ok_or("no output device")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let sample_rate = supported.sample_rate().0;
     let format = supported.sample_format();
 
-    let banks = Arc::new(load_banks(custom_dir, sample_rate));
-    let mut variants = [0; 5];
-    for (i, bank) in banks.iter().enumerate() {
-        variants[i] = bank.len();
+    let profiles: Vec<Banks> = (0..PROFILES.len()).map(|p| load_banks(p, custom_dir, sample_rate)).collect();
+    let mut variants = [[0; 5]; 3];
+    for (p, banks) in profiles.iter().enumerate() {
+        for (s, bank) in banks.iter().enumerate() {
+            variants[p][s] = bank.len();
+        }
     }
+    let banks = Arc::new(profiles);
 
     let mut config: cpal::StreamConfig = supported.config();
     let mut buffer_sizes = vec![cpal::BufferSize::Default];
@@ -169,6 +196,7 @@ where
 
 #[derive(Clone, Copy, Default)]
 struct Voice {
+    profile: usize,
     sound: usize,
     variant: usize,
     pos: usize,
@@ -177,7 +205,7 @@ struct Voice {
 }
 
 struct Mixer {
-    banks: Arc<Banks>,
+    banks: Arc<Vec<Banks>>,
     rx: Receiver<Trigger>,
     shared: Arc<Shared>,
     voices: [Voice; VOICES],
@@ -185,21 +213,22 @@ struct Mixer {
 }
 
 impl Mixer {
-    fn new(banks: Arc<Banks>, rx: Receiver<Trigger>, shared: Arc<Shared>) -> Self {
+    fn new(banks: Arc<Vec<Banks>>, rx: Receiver<Trigger>, shared: Arc<Shared>) -> Self {
         Self { banks, rx, shared, voices: [Voice::default(); VOICES], next: 0 }
     }
 
     /// Runs on the real-time audio thread: no allocation, no locks.
     fn fill<T: cpal::Sample + cpal::FromSample<f32>>(&mut self, data: &mut [T], channels: usize) {
         while let Ok(t) = self.rx.try_recv() {
-            self.voices[self.next] = Voice { sound: t.sound, variant: t.variant, pos: 0, gain: t.gain, active: true };
+            self.voices[self.next] =
+                Voice { profile: t.profile, sound: t.sound, variant: t.variant, pos: 0, gain: t.gain, active: true };
             self.next = (self.next + 1) % VOICES;
         }
         let master = f32::from_bits(self.shared.gain.load(Ordering::Relaxed));
         for frame in data.chunks_mut(channels) {
             let mut mix = 0.0f32;
             for voice in self.voices.iter_mut().filter(|v| v.active) {
-                let samples = &self.banks[voice.sound][voice.variant];
+                let samples = &self.banks[voice.profile][voice.sound][voice.variant];
                 match samples.get(voice.pos) {
                     Some(s) => {
                         mix += s * voice.gain;
@@ -216,7 +245,8 @@ impl Mixer {
     }
 }
 
-fn load_banks(custom_dir: &Path, sample_rate: u32) -> Banks {
+/// Custom samples, when present, replace that sound in every profile.
+fn load_banks(profile: usize, custom_dir: &Path, sample_rate: u32) -> Banks {
     Sound::ALL
         .iter()
         .map(|sound| {
@@ -224,10 +254,10 @@ fn load_banks(custom_dir: &Path, sample_rate: u32) -> Banks {
             if !custom.is_empty() {
                 return custom;
             }
-            BUILTIN
+            let start = sound.index() * VARIANTS_PER_SOUND;
+            BUILTIN[profile][start..start + VARIANTS_PER_SOUND]
                 .iter()
-                .filter(|(name, _)| name.starts_with(sound.name()))
-                .filter_map(|(_, bytes)| decode(std::io::Cursor::new(*bytes), sample_rate))
+                .filter_map(|bytes| decode(std::io::Cursor::new(*bytes), sample_rate))
                 .collect()
         })
         .collect()

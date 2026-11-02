@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent, Wry};
 
@@ -39,15 +39,17 @@ struct AppState {
     sounds_dir: PathBuf,
     permission: AtomicU8,
     mute_item: Mutex<Option<CheckMenuItem<Wry>>>,
+    profile_items: Mutex<Vec<(&'static str, CheckMenuItem<Wry>)>>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UiState {
     volume: f32,
     muted: bool,
     close_to_tray: bool,
     start_minimized: bool,
+    profile: String,
     permission: &'static str,
     platform: &'static str,
     version: String,
@@ -62,6 +64,7 @@ fn ui_state(app: &AppHandle) -> UiState {
         muted: s.muted,
         close_to_tray: s.close_to_tray,
         start_minimized: s.start_minimized,
+        profile: s.profile,
         permission: match state.permission.load(Ordering::Relaxed) {
             PERMISSION_GRANTED => "granted",
             PERMISSION_RELAUNCH => "relaunch",
@@ -95,6 +98,26 @@ fn apply_muted(app: &AppHandle, muted: bool) {
         let _ = tray.set_tooltip(Some(if muted { "Clicky (muted)" } else { "Clicky by Heyrishi" }));
     }
     notify(app);
+}
+
+fn apply_profile(app: &AppHandle, profile: &str) {
+    let state = app.state::<AppState>();
+    if !state.audio.set_profile(profile) {
+        return;
+    }
+    update_settings(app, |s| s.profile = profile.to_string());
+    for (name, item) in state.profile_items.lock().unwrap().iter() {
+        let _ = item.set_checked(*name == profile);
+    }
+    notify(app);
+}
+
+fn profile_label(profile: &str) -> &'static str {
+    match profile {
+        "creamy" => "Creamy",
+        "classic" => "Classic",
+        _ => "Crisp",
+    }
 }
 
 fn show_window(app: &AppHandle) {
@@ -132,6 +155,11 @@ fn set_volume(app: AppHandle, state: State<AppState>, volume: f32) {
 #[tauri::command]
 fn set_muted(app: AppHandle, muted: bool) {
     apply_muted(&app, muted);
+}
+
+#[tauri::command]
+fn set_profile(app: AppHandle, profile: String) {
+    apply_profile(&app, &profile);
 }
 
 #[tauri::command]
@@ -191,15 +219,32 @@ fn quit(app: AppHandle) {
 
 // MARK: - Setup
 
-fn build_tray(app: &AppHandle, muted: bool) -> tauri::Result<()> {
+fn build_tray(app: &AppHandle, muted: bool, profile: &str) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Clicky", true, None::<&str>)?;
     let mute = CheckMenuItem::with_id(app, "mute", "Mute sounds", true, muted, None::<&str>)?;
+    let mut profile_items = Vec::new();
+    for name in audio::PROFILES {
+        let item = CheckMenuItem::with_id(app, format!("profile:{name}"), profile_label(name), true, name == profile, None::<&str>)?;
+        profile_items.push((name, item));
+    }
+    let profile_refs: Vec<&dyn tauri::menu::IsMenuItem<Wry>> =
+        profile_items.iter().map(|(_, item)| item as &dyn tauri::menu::IsMenuItem<Wry>).collect();
+    let profiles = Submenu::with_items(app, "Sound profile", true, &profile_refs)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Clicky", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[&open, &PredefinedMenuItem::separator(app)?, &mute, &PredefinedMenuItem::separator(app)?, &quit],
+        &[
+            &open,
+            &PredefinedMenuItem::separator(app)?,
+            &mute,
+            &profiles,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
     )?;
-    *app.state::<AppState>().mute_item.lock().unwrap() = Some(mute);
+    let state = app.state::<AppState>();
+    *state.mute_item.lock().unwrap() = Some(mute);
+    *state.profile_items.lock().unwrap() = profile_items;
 
     TrayIconBuilder::with_id("main")
         .icon(tauri::image::Image::from_bytes(TRAY_ICON)?)
@@ -215,7 +260,11 @@ fn build_tray(app: &AppHandle, muted: bool) -> tauri::Result<()> {
                 apply_muted(app, muted);
             }
             "quit" => app.exit(0),
-            _ => {}
+            id => {
+                if let Some(profile) = id.strip_prefix("profile:") {
+                    apply_profile(app, profile);
+                }
+            }
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
@@ -270,13 +319,18 @@ fn main() {
             std::fs::create_dir_all(&config_dir)?;
             let settings_path = config_dir.join("settings.json");
             let sounds_dir = config_dir.join("sounds");
-            let settings = Settings::load(&settings_path);
+            let mut settings = Settings::load(&settings_path);
 
             let audio = Arc::new(AudioHandle::start(&sounds_dir));
             audio.set_volume(settings.volume);
             audio.set_muted(settings.muted);
+            if !audio.set_profile(&settings.profile) {
+                settings.profile = audio::DEFAULT_PROFILE.to_string();
+                audio.set_profile(&settings.profile);
+            }
 
             let muted = settings.muted;
+            let profile = settings.profile.clone();
             let start_hidden = settings.start_minimized && settings.close_to_tray;
             app.manage(AppState {
                 audio,
@@ -285,10 +339,11 @@ fn main() {
                 sounds_dir,
                 permission: AtomicU8::new(PERMISSION_WAITING),
                 mute_item: Mutex::new(None),
+                profile_items: Mutex::new(Vec::new()),
             });
 
             let handle = app.handle();
-            build_tray(handle, muted)?;
+            build_tray(handle, muted, &profile)?;
             start_key_listener(handle);
             if start_hidden {
                 hide_window(handle);
@@ -312,6 +367,7 @@ fn main() {
             get_state,
             set_volume,
             set_muted,
+            set_profile,
             set_close_to_tray,
             set_start_minimized,
             preview,

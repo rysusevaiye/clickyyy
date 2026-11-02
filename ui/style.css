@@ -160,6 +160,26 @@ button:disabled { opacity: 0.45; cursor: default; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #FFFFFF; align-self: flex-start; }
 button.danger { color: var(--red); }
 
+.profiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.profiles button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  text-align: left;
+}
+.profiles small { font-size: 11px; color: var(--muted); }
+.profiles button[aria-checked="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.profiles button[aria-checked="true"] b { color: var(--accent); }
+
 .previews {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
