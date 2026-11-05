@@ -31,7 +31,8 @@ Clicky runs in the background (in the tray or menu bar) and plays a mechanical k
   - **Creamy**: warm, deep PBT thock with case resonance
   - **Classic**: bright, lively clicky switches
 - **Natural variation.** Five variants per sound, chosen at random, with slight per-hit volume changes.
-- **Minimal UI.** Master volume, mute, sound previews, run-in-tray and start-minimized options. Settings are remembered.
+- **Choose your speakers.** Send Clicky to any output device. Bluetooth adds delay no app can remove, so pick built-in or wired speakers for the fastest clicks, even while your music stays on Bluetooth. The default follows the system output.
+- **Minimal UI.** Master volume, mute, output device, sound previews, run-in-tray and start-minimized options. Settings are remembered.
 
 ## Download
 

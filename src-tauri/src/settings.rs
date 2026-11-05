@@ -10,6 +10,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     pub start_minimized: bool,
     pub profile: String,
+    /// Output device name; `None` follows the system default.
+    pub output_device: Option<String>,
 }
 
 impl Default for Settings {
@@ -20,6 +22,7 @@ impl Default for Settings {
             close_to_tray: true,
             start_minimized: false,
             profile: crate::audio::DEFAULT_PROFILE.to_string(),
+            output_device: None,
         }
     }
 }

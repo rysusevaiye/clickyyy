@@ -4,10 +4,15 @@
 //! the audio callback only ever mixes pre-loaded `f32` slices. Keystrokes reach the
 //! callback through a lock-free bounded channel and start on the very next buffer,
 //! which is requested as small as the device allows (256 frames, ~5 ms at 48 kHz).
+//!
+//! The output is either a device the user picked or the system default, which is
+//! followed when it changes. A picked device that disappears falls back to the default
+//! until it returns.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -16,6 +21,8 @@ use crate::keys::Sound;
 
 const VOICES: usize = 24;
 const IO_BUFFER_FRAMES: u32 = 256;
+/// How often to check whether the device we should be using has changed.
+const DEVICE_POLL: Duration = Duration::from_secs(2);
 
 /// Built-in sound profiles: the folder name under `assets/sounds/`.
 pub const PROFILES: [&str; 3] = ["crisp", "creamy", "classic"];
@@ -50,6 +57,13 @@ struct Trigger {
     gain: f32,
 }
 
+/// Requests handled on the audio thread, which owns everything cpal.
+enum Command {
+    ListDevices(mpsc::Sender<Vec<String>>),
+    SetDevice(Option<String>),
+    DeviceLost,
+}
+
 struct Shared {
     /// Linear gain as f32 bits.
     gain: AtomicU32,
@@ -59,41 +73,49 @@ struct Shared {
 pub struct AudioHandle {
     tx: Sender<Trigger>,
     shared: Arc<Shared>,
+    commands: mpsc::Sender<Command>,
     profile: AtomicUsize,
     variants: [[usize; 5]; 3],
     last_variant: [AtomicUsize; 5],
 }
 
 impl AudioHandle {
-    /// Opens the default output device and starts the mixer. Custom samples in
-    /// `custom_dir` (e.g. `thock_1.wav`) replace the built-in ones per category.
-    pub fn start(custom_dir: &Path) -> AudioHandle {
+    /// Starts the mixer on `output_device`, or the system default when `None`. Custom
+    /// samples in `custom_dir` (e.g. `thock_1.wav`) replace the built-in ones per category.
+    pub fn start(custom_dir: &Path, output_device: Option<String>) -> AudioHandle {
         let (tx, rx) = bounded::<Trigger>(256);
         let shared = Arc::new(Shared { gain: AtomicU32::new(0.5f32.to_bits()), muted: AtomicBool::new(false) });
+        let (commands, commands_rx) = mpsc::channel();
 
         // The cpal stream isn't Send on every platform, so it lives on its own thread.
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<[[usize; 5]; 3]>();
-        let thread_shared = shared.clone();
-        let custom_dir = custom_dir.to_path_buf();
+        let (ready_tx, ready_rx) = mpsc::channel::<[[usize; 5]; 3]>();
+        let thread = AudioThread {
+            custom_dir: custom_dir.to_path_buf(),
+            rx,
+            shared: shared.clone(),
+            commands: commands.clone(),
+        };
         std::thread::Builder::new()
             .name("clicky-audio".into())
-            .spawn(move || match open_stream(&custom_dir, rx, thread_shared) {
-                Ok((stream, variants)) => {
-                    let _ = ready_tx.send(variants);
-                    let _stream = stream;
-                    loop {
-                        std::thread::park();
-                    }
-                }
-                Err(err) => {
-                    eprintln!("clicky: audio unavailable: {err}");
-                    let _ = ready_tx.send([[0; 5]; 3]);
-                }
-            })
+            .spawn(move || thread.run(output_device, commands_rx, ready_tx))
             .expect("spawn audio thread");
 
         let variants = ready_rx.recv().unwrap_or([[0; 5]; 3]);
-        AudioHandle { tx, shared, profile: AtomicUsize::new(0), variants, last_variant: Default::default() }
+        AudioHandle { tx, shared, commands, profile: AtomicUsize::new(0), variants, last_variant: Default::default() }
+    }
+
+    /// Names of the output devices currently available.
+    pub fn output_devices(&self) -> Vec<String> {
+        let (reply, devices) = mpsc::channel();
+        if self.commands.send(Command::ListDevices(reply)).is_err() {
+            return Vec::new();
+        }
+        devices.recv_timeout(Duration::from_secs(3)).unwrap_or_default()
+    }
+
+    /// Switches to the named output device, or the system default when `None`.
+    pub fn set_output_device(&self, name: Option<String>) {
+        let _ = self.commands.send(Command::SetDevice(name));
     }
 
     /// Switches the built-in sound profile; returns false for an unknown name.
@@ -138,48 +160,148 @@ impl AudioHandle {
     }
 }
 
-type StreamAndVariants = (cpal::Stream, [[usize; 5]; 3]);
+struct AudioThread {
+    custom_dir: PathBuf,
+    rx: Receiver<Trigger>,
+    shared: Arc<Shared>,
+    commands: mpsc::Sender<Command>,
+}
 
-fn open_stream(custom_dir: &Path, rx: Receiver<Trigger>, shared: Arc<Shared>) -> Result<StreamAndVariants, String> {
-    let device = cpal::default_host().default_output_device().ok_or("no output device")?;
-    let supported = device.default_output_config().map_err(|e| e.to_string())?;
-    let sample_rate = supported.sample_rate().0;
-    let format = supported.sample_format();
+impl AudioThread {
+    fn run(
+        self,
+        mut selected: Option<String>,
+        commands: mpsc::Receiver<Command>,
+        ready: mpsc::Sender<[[usize; 5]; 3]>,
+    ) {
+        let host = cpal::default_host();
+        let rate = host
+            .default_output_device()
+            .and_then(|d| d.default_output_config().ok())
+            .map_or(48_000, |c| c.sample_rate().0);
+        // Samples are resampled per device rate; variant counts never depend on it.
+        let mut banks = (rate, self.load_all_banks(rate));
+        let _ = ready.send(variant_counts(&banks.1));
 
-    let profiles: Vec<Banks> = (0..PROFILES.len()).map(|p| load_banks(p, custom_dir, sample_rate)).collect();
+        let mut current: Option<(cpal::Stream, Option<String>)> = None;
+        let mut needs_open = true;
+        loop {
+            if needs_open {
+                needs_open = false;
+                drop(current.take());
+                current = wanted_device(&host, &selected).and_then(|device| {
+                    let name = device.name().ok();
+                    match self.open_stream(&device, &mut banks) {
+                        Ok(stream) => Some((stream, name)),
+                        Err(err) => {
+                            eprintln!("clicky: couldn't open output {name:?}: {err}");
+                            None
+                        }
+                    }
+                });
+            }
+            match commands.recv_timeout(DEVICE_POLL) {
+                Ok(Command::ListDevices(reply)) => {
+                    let _ = reply.send(device_names(&host));
+                }
+                Ok(Command::SetDevice(name)) => {
+                    selected = name;
+                    needs_open = true;
+                }
+                Ok(Command::DeviceLost) => needs_open = true,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let current_name = current.as_ref().and_then(|(_, name)| name.as_ref());
+                    // A picked device that's in use reports its own loss, so only the
+                    // default and the fallback from a missing device need checking.
+                    if selected.is_none() || current_name != selected.as_ref() {
+                        let wanted = wanted_device(&host, &selected).and_then(|d| d.name().ok());
+                        needs_open = wanted.as_ref() != current_name;
+                    }
+                    // Don't let keystrokes pile up while there's nothing to play them.
+                    if current.is_none() {
+                        while self.rx.try_recv().is_ok() {}
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
+
+    fn load_all_banks(&self, sample_rate: u32) -> Arc<Vec<Banks>> {
+        Arc::new((0..PROFILES.len()).map(|p| load_banks(p, &self.custom_dir, sample_rate)).collect())
+    }
+
+    fn open_stream(&self, device: &cpal::Device, banks: &mut (u32, Arc<Vec<Banks>>)) -> Result<cpal::Stream, String> {
+        let supported = device.default_output_config().map_err(|e| e.to_string())?;
+        let sample_rate = supported.sample_rate().0;
+        let format = supported.sample_format();
+        if banks.0 != sample_rate {
+            *banks = (sample_rate, self.load_all_banks(sample_rate));
+        }
+
+        let mut config: cpal::StreamConfig = supported.config();
+        let mut buffer_sizes = vec![cpal::BufferSize::Default];
+        if let cpal::SupportedBufferSize::Range { min, max } = supported.buffer_size() {
+            buffer_sizes.insert(0, cpal::BufferSize::Fixed(IO_BUFFER_FRAMES.clamp(*min, *max)));
+        }
+
+        let mut last_err = String::new();
+        for buffer_size in buffer_sizes {
+            config.buffer_size = buffer_size;
+            let mixer = Mixer::new(banks.1.clone(), self.rx.clone(), self.shared.clone());
+            let lost = self.commands.clone();
+            let result = match format {
+                cpal::SampleFormat::I16 => build::<i16>(device, &config, mixer, lost),
+                cpal::SampleFormat::U16 => build::<u16>(device, &config, mixer, lost),
+                cpal::SampleFormat::I32 => build::<i32>(device, &config, mixer, lost),
+                _ => build::<f32>(device, &config, mixer, lost),
+            };
+            match result.and_then(|s| s.play().map(|_| s).map_err(|e| e.to_string())) {
+                Ok(stream) => return Ok(stream),
+                Err(e) => last_err = e,
+            }
+        }
+        Err(last_err)
+    }
+}
+
+fn variant_counts(profiles: &[Banks]) -> [[usize; 5]; 3] {
     let mut variants = [[0; 5]; 3];
     for (p, banks) in profiles.iter().enumerate() {
         for (s, bank) in banks.iter().enumerate() {
             variants[p][s] = bank.len();
         }
     }
-    let banks = Arc::new(profiles);
-
-    let mut config: cpal::StreamConfig = supported.config();
-    let mut buffer_sizes = vec![cpal::BufferSize::Default];
-    if let cpal::SupportedBufferSize::Range { min, max } = supported.buffer_size() {
-        buffer_sizes.insert(0, cpal::BufferSize::Fixed(IO_BUFFER_FRAMES.clamp(*min, *max)));
-    }
-
-    let mut last_err = String::new();
-    for buffer_size in buffer_sizes {
-        config.buffer_size = buffer_size;
-        let mixer = Mixer::new(banks.clone(), rx.clone(), shared.clone());
-        let result = match format {
-            cpal::SampleFormat::I16 => build::<i16>(&device, &config, mixer),
-            cpal::SampleFormat::U16 => build::<u16>(&device, &config, mixer),
-            cpal::SampleFormat::I32 => build::<i32>(&device, &config, mixer),
-            _ => build::<f32>(&device, &config, mixer),
-        };
-        match result.and_then(|s| s.play().map(|_| s).map_err(|e| e.to_string())) {
-            Ok(stream) => return Ok((stream, variants)),
-            Err(e) => last_err = e,
-        }
-    }
-    Err(last_err)
+    variants
 }
 
-fn build<T>(device: &cpal::Device, config: &cpal::StreamConfig, mut mixer: Mixer) -> Result<cpal::Stream, String>
+/// The picked device if it's connected, otherwise the system default.
+fn wanted_device(host: &cpal::Host, selected: &Option<String>) -> Option<cpal::Device> {
+    let picked = selected.as_deref().and_then(|name| {
+        let mut devices = host.output_devices().ok()?;
+        devices.find(|d| d.name().ok().as_deref() == Some(name))
+    });
+    picked.or_else(|| host.default_output_device())
+}
+
+fn device_names(host: &cpal::Host) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(devices) = host.output_devices() {
+        for name in devices.filter_map(|d| d.name().ok()) {
+            if name != "null" && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+fn build<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    mut mixer: Mixer,
+    lost: mpsc::Sender<Command>,
+) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
@@ -188,7 +310,12 @@ where
         .build_output_stream(
             config,
             move |data: &mut [T], _| mixer.fill(data, channels),
-            |err| eprintln!("clicky: audio stream error: {err}"),
+            move |err| {
+                eprintln!("clicky: audio stream error: {err}");
+                if matches!(err, cpal::StreamError::DeviceNotAvailable) {
+                    let _ = lost.send(Command::DeviceLost);
+                }
+            },
             None,
         )
         .map_err(|e| e.to_string())

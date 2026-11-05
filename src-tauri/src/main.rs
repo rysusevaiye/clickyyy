@@ -50,6 +50,7 @@ struct UiState {
     close_to_tray: bool,
     start_minimized: bool,
     profile: String,
+    output_device: Option<String>,
     permission: &'static str,
     platform: &'static str,
     version: String,
@@ -65,6 +66,7 @@ fn ui_state(app: &AppHandle) -> UiState {
         close_to_tray: s.close_to_tray,
         start_minimized: s.start_minimized,
         profile: s.profile,
+        output_device: s.output_device,
         permission: match state.permission.load(Ordering::Relaxed) {
             PERMISSION_GRANTED => "granted",
             PERMISSION_RELAUNCH => "relaunch",
@@ -160,6 +162,20 @@ fn set_muted(app: AppHandle, muted: bool) {
 #[tauri::command]
 fn set_profile(app: AppHandle, profile: String) {
     apply_profile(&app, &profile);
+}
+
+// Off the main thread: listing devices can take a moment on some systems.
+#[tauri::command(async)]
+fn list_output_devices(app: AppHandle) -> Vec<String> {
+    let state = app.state::<AppState>();
+    state.audio.output_devices()
+}
+
+#[tauri::command]
+fn set_output_device(app: AppHandle, state: State<AppState>, device: Option<String>) {
+    state.audio.set_output_device(device.clone());
+    update_settings(&app, |s| s.output_device = device);
+    notify(&app);
 }
 
 #[tauri::command]
@@ -321,7 +337,7 @@ fn main() {
             let sounds_dir = config_dir.join("sounds");
             let mut settings = Settings::load(&settings_path);
 
-            let audio = Arc::new(AudioHandle::start(&sounds_dir));
+            let audio = Arc::new(AudioHandle::start(&sounds_dir, settings.output_device.clone()));
             audio.set_volume(settings.volume);
             audio.set_muted(settings.muted);
             if !audio.set_profile(&settings.profile) {
@@ -368,6 +384,8 @@ fn main() {
             set_volume,
             set_muted,
             set_profile,
+            list_output_devices,
+            set_output_device,
             set_close_to_tray,
             set_start_minimized,
             preview,

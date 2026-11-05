@@ -6,7 +6,26 @@ const volume = $("volume");
 const muted = $("muted");
 const closeToTray = $("close-to-tray");
 const startMinimized = $("start-minimized");
+const output = $("output");
 let permission = "granted";
+let outputDevice = null;
+let deviceNames = [];
+
+function renderOutput() {
+  const options = [new Option("System default", ""), ...deviceNames.map((name) => new Option(name, name))];
+  if (outputDevice && !deviceNames.includes(outputDevice)) {
+    options.push(new Option(`${outputDevice} (not connected)`, outputDevice));
+  }
+  output.replaceChildren(...options);
+  output.value = outputDevice ?? "";
+}
+
+async function refreshDevices() {
+  const names = await invoke("list_output_devices");
+  if (JSON.stringify(names) === JSON.stringify(deviceNames)) return;
+  deviceNames = names;
+  renderOutput();
+}
 
 function setVolumeLabel(percent) {
   $("volume-value").textContent = `${percent}%`;
@@ -15,6 +34,10 @@ function setVolumeLabel(percent) {
 
 function render(state) {
   permission = state.permission;
+  if (state.outputDevice !== outputDevice) {
+    outputDevice = state.outputDevice;
+    renderOutput();
+  }
   const percent = Math.round(state.volume * 100);
   if (document.activeElement !== volume) volume.value = percent;
   setVolumeLabel(percent);
@@ -58,6 +81,10 @@ volume.addEventListener("input", () => {
   invoke("set_volume", { volume: volume.value / 100 });
 });
 muted.addEventListener("change", () => invoke("set_muted", { muted: muted.checked }));
+output.addEventListener("change", async () => {
+  await invoke("set_output_device", { device: output.value || null });
+  invoke("preview", { sound: "click" });
+});
 closeToTray.addEventListener("change", () => invoke("set_close_to_tray", { value: closeToTray.checked }));
 startMinimized.addEventListener("change", () => invoke("set_start_minimized", { value: startMinimized.checked }));
 
@@ -81,3 +108,9 @@ $("quit").addEventListener("click", () => invoke("quit"));
 
 listen("state-changed", (event) => render(event.payload));
 invoke("get_state").then(render);
+renderOutput();
+refreshDevices();
+window.addEventListener("focus", refreshDevices);
+setInterval(() => {
+  if (!document.hidden) refreshDevices();
+}, 5000);
